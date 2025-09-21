@@ -9,16 +9,134 @@ from datetime import datetime
 import threading
 import queue
 import time
-from ai_service import ai_service
+import eventlet
+import eventlet.wsgi
 
+# Initialize Flask app
 app = Flask(__name__)
-app.config['SECRET_KEY'] = 'terminal_secret_key'
-socketio = SocketIO(app, cors_allowed_origins="*")
+app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'terminal_secret_key_fallback')
+socketio = SocketIO(app, cors_allowed_origins="*", async_mode='eventlet')
 
 # Global variables for command history and current directory
 command_history = []
 current_directory = os.getcwd()
 history_index = -1
+
+class AIService:
+    """AI service using pattern matching (no external API required)"""
+    
+    def __init__(self):
+        self.mode = 'unix'  # Default mode
+        
+        # Simple command mappings for fallback
+        self.command_mappings = {
+            'list files': 'ls',
+            'list directories': 'ls -la',
+            'show files': 'ls',
+            'current directory': 'pwd',
+            'where am i': 'pwd',
+            'change directory': 'cd',
+            'go to': 'cd',
+            'navigate to': 'cd',
+            'make directory': 'mkdir',
+            'create folder': 'mkdir',
+            'create directory': 'mkdir',
+            'remove file': 'rm',
+            'delete file': 'rm',
+            'remove directory': 'rm -r',
+            'delete folder': 'rm -r',
+            'show file content': 'cat',
+            'read file': 'cat',
+            'display file': 'cat',
+            'running processes': 'ps',
+            'system status': 'top',
+            'disk usage': 'df',
+            'memory usage': 'free',
+            'help': 'help'
+        }
+    
+    def set_mode(self, mode):
+        """Set the operating system mode"""
+        self.mode = mode
+    
+    def interpret_command(self, natural_language):
+        """Convert natural language to terminal command"""
+        nl_lower = natural_language.lower().strip()
+        
+        # Pattern matching for natural language commands
+        for phrase, command in self.command_mappings.items():
+            if phrase in nl_lower:
+                return {
+                    'command': command,
+                    'confidence': 0.8,
+                    'explanation': f'Interpreted "{natural_language}" as "{command}"'
+                }
+        
+        # Try to extract directory/file names for commands
+        if 'go to' in nl_lower or 'navigate to' in nl_lower or 'change to' in nl_lower:
+            # Extract the directory name
+            words = nl_lower.replace('go to', '').replace('navigate to', '').replace('change to', '').strip()
+            if words:
+                return {
+                    'command': f'cd {words}',
+                    'confidence': 0.9,
+                    'explanation': f'Interpreted as change directory to "{words}"'
+                }
+        
+        if 'create' in nl_lower and ('folder' in nl_lower or 'directory' in nl_lower):
+            # Extract folder name
+            words = nl_lower.split()
+            if 'called' in words:
+                idx = words.index('called')
+                if idx + 1 < len(words):
+                    folder_name = words[idx + 1]
+                    return {
+                        'command': f'mkdir {folder_name}',
+                        'confidence': 0.9,
+                        'explanation': f'Interpreted as create directory "{folder_name}"'
+                    }
+        
+        return {
+            'command': natural_language,
+            'confidence': 0.1,
+            'explanation': 'Could not interpret command'
+        }
+    
+    def get_suggestions(self, partial_command):
+        """Get command suggestions"""
+        suggestions = []
+        pc_lower = partial_command.lower()
+        
+        common_commands = ['ls', 'cd', 'pwd', 'mkdir', 'rm', 'cat', 'ps', 'top', 'df', 'free', 'clear', 'history']
+        
+        for cmd in common_commands:
+            if cmd.startswith(pc_lower):
+                suggestions.append(cmd)
+        
+        return suggestions[:5]
+    
+    def explain_command(self, command):
+        """Explain what a command does"""
+        explanations = {
+            'ls': 'List directory contents',
+            'cd': 'Change directory',
+            'pwd': 'Print working directory',
+            'mkdir': 'Create directory',
+            'rm': 'Remove files or directories',
+            'cat': 'Display file contents',
+            'ps': 'Show running processes',
+            'top': 'Display system resource usage',
+            'df': 'Show disk usage',
+            'free': 'Show memory usage',
+            'clear': 'Clear terminal screen',
+            'history': 'Show command history'
+        }
+        
+        cmd_base = command.split()[0] if command.split() else command
+        return explanations.get(cmd_base, f'Command: {command}')
+
+# Initialize AI service
+ai_service = AIService()
 
 class TerminalBackend:
     def __init__(self):
@@ -74,12 +192,14 @@ class TerminalBackend:
                 return self.handle_free()
             elif command.strip() == 'ai-help':
                 return self.handle_ai_help()
+            elif command.strip() == 'help':
+                return self.handle_help()
 
             # Basic command validation: block dangerous commands
-            forbidden = ['rm -rf /', 'shutdown', 'reboot', 'poweroff', ':(){:|:&};:']
+            forbidden = ['rm -rf /', 'shutdown', 'reboot', 'poweroff', ':(){:|:&};:', 'format', 'fdisk', 'mkfs']
             for bad in forbidden:
-                if bad in command:
-                    return {'type': 'error', 'output': 'Dangerous command blocked.'}
+                if bad in command.lower():
+                    return {'type': 'error', 'output': 'Dangerous command blocked for security.'}
 
             # Use Popen for real-time output streaming
             process = subprocess.Popen(
@@ -101,7 +221,7 @@ class TerminalBackend:
                 process.wait(timeout=15)
             except subprocess.TimeoutExpired:
                 process.kill()
-                return {'type': 'error', 'output': 'Command timed out'}
+                return {'type': 'error', 'output': 'Command timed out (15s limit)'}
             except Exception as e:
                 process.kill()
                 return {'type': 'error', 'output': f'Error: {str(e)}'}
@@ -128,10 +248,32 @@ class TerminalBackend:
         command_lower = command.lower()
         return any(indicator in command_lower for indicator in natural_indicators)
     
-    def add_output(self, text, output_type='output'):
-        """Add output to terminal (for internal use)"""
-        # This method is used internally by the terminal backend
-        pass
+    def handle_help(self):
+        """Handle help command"""
+        help_text = """
+Available Commands:
+• ls [path] - List directory contents
+• cd <path> - Change directory
+• pwd - Show current directory
+• mkdir <name> - Create directory
+• rm <file> - Remove file
+• rm -r <dir> - Remove directory
+• cat <file> - Display file contents
+• ps - Show running processes
+• top - System resource usage
+• df - Disk usage
+• free - Memory usage
+• clear - Clear screen
+• history - Command history
+• ai-help - AI features help
+• help - Show this help
+
+Try natural language commands like:
+• "list files in current directory"
+• "create a folder called test"
+• "show me system status"
+        """
+        return {'type': 'output', 'output': help_text}
     
     def handle_cd(self, command):
         """Handle cd command"""
@@ -142,14 +284,14 @@ class TerminalBackend:
             
             if path == '..':
                 new_path = os.path.dirname(self.current_dir)
-            elif path.startswith('/') or path.startswith('C:'):
+            elif path.startswith('/') or (len(path) > 1 and path[1] == ':'):  # Unix absolute or Windows drive
                 new_path = path
             else:
                 new_path = os.path.join(self.current_dir, path)
             
             if os.path.exists(new_path) and os.path.isdir(new_path):
                 self.current_dir = os.path.abspath(new_path)
-                return {'type': 'output', 'output': ''}
+                return {'type': 'output', 'output': f'Changed to: {self.current_dir}'}
             else:
                 return {'type': 'error', 'output': f'cd: {path}: No such file or directory'}
         except Exception as e:
@@ -161,29 +303,44 @@ class TerminalBackend:
             args = command.split()[1:] if len(command.split()) > 1 else []
             path = self.current_dir
             
-            if args and not args[0].startswith('-'):
-                path = os.path.join(self.current_dir, args[0])
+            # Check if there's a path argument (not a flag)
+            for arg in args:
+                if not arg.startswith('-'):
+                    path = os.path.join(self.current_dir, arg) if not os.path.isabs(arg) else arg
+                    break
             
             if not os.path.exists(path):
                 return {'type': 'error', 'output': f'ls: {path}: No such file or directory'}
             
             if not os.path.isdir(path):
-                return {'type': 'error', 'output': f'ls: {path}: Not a directory'}
+                return {'type': 'output', 'output': os.path.basename(path)}
             
-            files = os.listdir(path)
+            try:
+                files = os.listdir(path)
+            except PermissionError:
+                return {'type': 'error', 'output': f'ls: {path}: Permission denied'}
+            
+            files.sort()  # Sort files alphabetically
+            
             if '-l' in args:
                 # Long format
                 output_lines = []
                 for file in files:
                     file_path = os.path.join(path, file)
-                    stat = os.stat(file_path)
-                    size = stat.st_size
-                    mtime = datetime.fromtimestamp(stat.st_mtime).strftime('%b %d %H:%M')
-                    file_type = 'd' if os.path.isdir(file_path) else '-'
-                    output_lines.append(f"{file_type} {size:>8} {mtime} {file}")
+                    try:
+                        stat = os.stat(file_path)
+                        size = stat.st_size
+                        mtime = datetime.fromtimestamp(stat.st_mtime).strftime('%b %d %H:%M')
+                        file_type = 'd' if os.path.isdir(file_path) else '-'
+                        perms = 'rwxrwxrwx' if os.access(file_path, os.R_OK | os.W_OK | os.X_OK) else 'r--r--r--'
+                        output_lines.append(f"{file_type}{perms} {size:>8} {mtime} {file}")
+                    except (OSError, PermissionError):
+                        output_lines.append(f"?????????? {0:>8} ??? ?? ??:?? {file}")
                 return {'type': 'output', 'output': '\n'.join(output_lines)}
             else:
-                # Simple format
+                # Simple format - show in columns
+                if not files:
+                    return {'type': 'output', 'output': ''}
                 return {'type': 'output', 'output': '  '.join(files)}
         except Exception as e:
             return {'type': 'error', 'output': f'ls error: {str(e)}'}
@@ -195,9 +352,9 @@ class TerminalBackend:
             if not dir_name:
                 return {'type': 'error', 'output': 'mkdir: missing operand'}
             
-            dir_path = os.path.join(self.current_dir, dir_name)
+            dir_path = os.path.join(self.current_dir, dir_name) if not os.path.isabs(dir_name) else dir_name
             os.makedirs(dir_path, exist_ok=True)
-            return {'type': 'output', 'output': ''}
+            return {'type': 'output', 'output': f'Directory created: {dir_name}'}
         except Exception as e:
             return {'type': 'error', 'output': f'mkdir error: {str(e)}'}
     
@@ -208,18 +365,25 @@ class TerminalBackend:
             if not args:
                 return {'type': 'error', 'output': 'rm: missing operand'}
             
-            file_path = os.path.join(self.current_dir, args[0])
-            if os.path.exists(file_path):
-                if os.path.isdir(file_path):
-                    if '-r' in args or '-rf' in args:
-                        shutil.rmtree(file_path)
-                    else:
-                        return {'type': 'error', 'output': f'rm: {args[0]}: is a directory'}
+            # Filter out flags to get the file/directory name
+            file_args = [arg for arg in args if not arg.startswith('-')]
+            if not file_args:
+                return {'type': 'error', 'output': 'rm: missing file operand'}
+            
+            file_path = os.path.join(self.current_dir, file_args[0]) if not os.path.isabs(file_args[0]) else file_args[0]
+            
+            if not os.path.exists(file_path):
+                return {'type': 'error', 'output': f'rm: {file_args[0]}: No such file or directory'}
+            
+            if os.path.isdir(file_path):
+                if '-r' in args or '-rf' in args or '--recursive' in args:
+                    shutil.rmtree(file_path)
+                    return {'type': 'output', 'output': f'Directory removed: {file_args[0]}'}
                 else:
-                    os.remove(file_path)
-                return {'type': 'output', 'output': ''}
+                    return {'type': 'error', 'output': f'rm: {file_args[0]}: is a directory (use -r for directories)'}
             else:
-                return {'type': 'error', 'output': f'rm: {args[0]}: No such file or directory'}
+                os.remove(file_path)
+                return {'type': 'output', 'output': f'File removed: {file_args[0]}'}
         except Exception as e:
             return {'type': 'error', 'output': f'rm error: {str(e)}'}
     
@@ -230,13 +394,23 @@ class TerminalBackend:
             if not file_name:
                 return {'type': 'error', 'output': 'cat: missing operand'}
             
-            file_path = os.path.join(self.current_dir, file_name)
-            if os.path.exists(file_path):
+            file_path = os.path.join(self.current_dir, file_name) if not os.path.isabs(file_name) else file_name
+            
+            if not os.path.exists(file_path):
+                return {'type': 'error', 'output': f'cat: {file_name}: No such file or directory'}
+            
+            if os.path.isdir(file_path):
+                return {'type': 'error', 'output': f'cat: {file_name}: Is a directory'}
+            
+            try:
                 with open(file_path, 'r', encoding='utf-8') as f:
                     content = f.read()
+                    # Limit output size for safety
+                    if len(content) > 10000:
+                        content = content[:10000] + '\n... (output truncated)'
                 return {'type': 'output', 'output': content}
-            else:
-                return {'type': 'error', 'output': f'cat: {file_name}: No such file or directory'}
+            except UnicodeDecodeError:
+                return {'type': 'error', 'output': f'cat: {file_name}: Binary file (not displayed)'}
         except Exception as e:
             return {'type': 'error', 'output': f'cat error: {str(e)}'}
     
@@ -247,13 +421,21 @@ class TerminalBackend:
             for proc in psutil.process_iter(['pid', 'name', 'cpu_percent', 'memory_percent']):
                 try:
                     processes.append(proc.info)
-                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
                     pass
             
-            output = f"{'PID':<8} {'NAME':<20} {'CPU%':<8} {'MEM%':<8}\n"
-            output += "-" * 50 + "\n"
+            # Sort by CPU usage
+            processes.sort(key=lambda x: x['cpu_percent'] or 0, reverse=True)
+            
+            output = f"{'PID':<8} {'NAME':<25} {'CPU%':<8} {'MEM%':<8}\n"
+            output += "-" * 55 + "\n"
+            
             for proc in processes[:20]:  # Show top 20 processes
-                output += f"{proc['pid']:<8} {proc['name']:<20} {proc['cpu_percent']:<8.1f} {proc['memory_percent']:<8.1f}\n"
+                pid = proc['pid']
+                name = (proc['name'][:22] + '...') if len(proc['name']) > 25 else proc['name']
+                cpu = proc['cpu_percent'] or 0
+                mem = proc['memory_percent'] or 0
+                output += f"{pid:<8} {name:<25} {cpu:<7.1f}% {mem:<7.1f}%\n"
             
             return {'type': 'output', 'output': output}
         except Exception as e:
@@ -262,14 +444,18 @@ class TerminalBackend:
     def handle_top(self):
         """Handle top command - system overview"""
         try:
-            cpu_percent = psutil.cpu_percent(interval=1)
+            cpu_percent = psutil.cpu_percent(interval=0.1)
             memory = psutil.virtual_memory()
             disk = psutil.disk_usage('/')
+            boot_time = datetime.fromtimestamp(psutil.boot_time())
             
             output = f"System Overview:\n"
-            output += f"CPU Usage: {cpu_percent}%\n"
-            output += f"Memory: {memory.percent}% used ({memory.used // (1024**3)}GB / {memory.total // (1024**3)}GB)\n"
-            output += f"Disk: {disk.percent}% used ({disk.used // (1024**3)}GB / {disk.total // (1024**3)}GB)\n"
+            output += f"{'='*50}\n"
+            output += f"Uptime: {datetime.now() - boot_time}\n"
+            output += f"CPU Usage: {cpu_percent:.1f}%\n"
+            output += f"Memory: {memory.percent:.1f}% used ({memory.used // (1024**3):.1f}GB / {memory.total // (1024**3):.1f}GB)\n"
+            output += f"Disk: {disk.percent:.1f}% used ({disk.used // (1024**3):.1f}GB / {disk.total // (1024**3):.1f}GB)\n"
+            output += f"Available Memory: {memory.available // (1024**3):.1f}GB\n"
             
             return {'type': 'output', 'output': output}
         except Exception as e:
@@ -279,8 +465,8 @@ class TerminalBackend:
         """Handle df command - disk usage"""
         try:
             partitions = psutil.disk_partitions()
-            output = f"{'Filesystem':<20} {'Size':<10} {'Used':<10} {'Available':<10} {'Use%':<8} {'Mounted on'}\n"
-            output += "-" * 80 + "\n"
+            output = f"{'Filesystem':<20} {'Size':<8} {'Used':<8} {'Avail':<8} {'Use%':<6} {'Mounted on'}\n"
+            output += "-" * 70 + "\n"
             
             for partition in partitions:
                 try:
@@ -288,10 +474,13 @@ class TerminalBackend:
                     total = usage.total // (1024**3)
                     used = usage.used // (1024**3)
                     free = usage.free // (1024**3)
-                    percent = (usage.used / usage.total) * 100
+                    percent = (usage.used / usage.total) * 100 if usage.total > 0 else 0
                     
-                    output += f"{partition.device:<20} {total:<10}G {used:<10}G {free:<10}G {percent:<7.1f}% {partition.mountpoint}\n"
-                except PermissionError:
+                    device = partition.device[:17] + '...' if len(partition.device) > 20 else partition.device
+                    mountpoint = partition.mountpoint[:15] + '...' if len(partition.mountpoint) > 18 else partition.mountpoint
+                    
+                    output += f"{device:<20} {total:<7}G {used:<7}G {free:<7}G {percent:<5.1f}% {mountpoint}\n"
+                except (PermissionError, OSError):
                     continue
             
             return {'type': 'output', 'output': output}
@@ -304,118 +493,4 @@ class TerminalBackend:
             memory = psutil.virtual_memory()
             swap = psutil.swap_memory()
             
-            output = f"{'':<12} {'Total':<10} {'Used':<10} {'Free':<10} {'Shared':<10} {'Available':<10}\n"
-            output += "-" * 70 + "\n"
-            output += f"{'Mem':<12} {memory.total // (1024**2):<10} {memory.used // (1024**2):<10} {memory.available // (1024**2):<10} {0:<10} {memory.available // (1024**2):<10}\n"
-            output += f"{'Swap':<12} {swap.total // (1024**2):<10} {swap.used // (1024**2):<10} {swap.free // (1024**2):<10} {0:<10} {0:<10}\n"
-            
-            return {'type': 'output', 'output': output}
-        except Exception as e:
-            return {'type': 'error', 'output': f'free error: {str(e)}'}
-    
-    def handle_ai_help(self):
-        """Handle ai-help command"""
-        help_text = """
-Command Terminal Features:
-
-Natural Language Commands:
-• "list files" -> ls
-• "create folder called test" -> mkdir test
-• "go to documents" -> cd documents
-• "show me running processes" -> ps
-• "what's in this file" -> cat filename
-• "delete the test folder" -> rm -r test
-• "show system info" -> top
-
-AI Features:
-• Type natural language and AI will convert to commands
-• Get command suggestions when unsure
-• AI explains what commands do
-• Smart command interpretation
-
-Examples:
-• "I want to see what files are here"
-• "Create a new directory for my project"
-• "Show me the system status"
-• "Help me navigate to the desktop"
-
-Type any natural language command to try it out!
-        """
-        return {'type': 'output', 'output': help_text}
-
-# Initialize terminal backend
-terminal = TerminalBackend()
-
-@app.route('/')
-def index():
-    return render_template('index.html')
-
-@socketio.on('connect')
-def handle_connect():
-    emit('terminal_output', {
-        'type': 'welcome',
-        'output': f'Welcome to Python Terminal!\nCurrent directory: {terminal.current_dir}\nType "help" for available commands.\n'
-    })
-
-@socketio.on('command')
-def handle_command(data):
-    command = data.get('command', '').strip()
-    os_mode = data.get('os_mode', None)
-    if not command:
-        return
-    # Add to history
-    terminal.command_history.append(command)
-    terminal.history_index = len(terminal.command_history) - 1
-    # Set mode for this request if provided
-    if os_mode:
-        ai_service.set_mode(os_mode)
-    # Execute command
-    result = terminal.execute_command(command)
-    # Send result back to client
-    emit('terminal_output', result)
-
-@socketio.on('get_history')
-def handle_get_history():
-    emit('command_history', {'history': terminal.command_history})
-
-@socketio.on('get_system_info')
-def handle_get_system_info():
-    try:
-        cpu_percent = psutil.cpu_percent(interval=1)
-        memory = psutil.virtual_memory()
-        disk = psutil.disk_usage('/')
-        
-        system_info = {
-            'cpu_percent': cpu_percent,
-            'memory_percent': memory.percent,
-            'memory_used': memory.used // (1024**3),
-            'memory_total': memory.total // (1024**3),
-            'disk_percent': disk.percent,
-            'disk_used': disk.used // (1024**3),
-            'disk_total': disk.total // (1024**3)
-        }
-        
-        emit('system_info', system_info)
-    except Exception as e:
-        emit('system_info', {'error': str(e)})
-
-@socketio.on('get_ai_suggestions')
-def handle_get_ai_suggestions(data):
-    partial_command = data.get('command', '')
-    suggestions = ai_service.get_suggestions(partial_command)
-    emit('ai_suggestions', {'suggestions': suggestions})
-
-@socketio.on('interpret_natural_language')
-def handle_interpret_natural_language(data):
-    natural_language = data.get('command', '')
-    result = ai_service.interpret_command(natural_language)
-    emit('ai_interpretation', result)
-
-@socketio.on('explain_command')
-def handle_explain_command(data):
-    command = data.get('command', '')
-    explanation = ai_service.explain_command(command)
-    emit('command_explanation', {'command': command, 'explanation': explanation})
-
-if __name__ == '__main__':
-    socketio.run(app, debug=True, host='0.0.0.0', port=5000)
+            output = f"
