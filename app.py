@@ -17,11 +17,6 @@ app = Flask(__name__)
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'terminal_secret_key_fallback')
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode='eventlet')
 
-# Global variables for command history and current directory
-command_history = []
-current_directory = os.getcwd()
-history_index = -1
-
 class AIService:
     """AI service using pattern matching (no external API required)"""
     
@@ -145,7 +140,7 @@ class TerminalBackend:
         self.history_index = -1
     
     def execute_command(self, command):
-        """Execute terminal commands and return output (with streaming and improved security)"""
+        """Execute terminal commands and return output"""
         try:
             # Check if this is a natural language command
             if self._is_natural_language(command):
@@ -212,7 +207,7 @@ class TerminalBackend:
             )
             output_lines = []
             try:
-                # Read output line by line (simulate streaming)
+                # Read output line by line
                 for line in iter(process.stdout.readline, ''):
                     if not line:
                         break
@@ -233,12 +228,10 @@ class TerminalBackend:
     
     def _is_natural_language(self, command):
         """Check if the command appears to be natural language"""
-        # If it's already a known command, it's not natural language
         known_commands = ['ls', 'cd', 'pwd', 'mkdir', 'rm', 'cat', 'ps', 'top', 'df', 'free', 'clear', 'help', 'history', 'ai-help']
         if command.strip().split()[0] in known_commands:
             return False
         
-        # Check for natural language indicators
         natural_indicators = [
             'list', 'show', 'create', 'make', 'delete', 'remove', 'go to', 'navigate',
             'change to', 'display', 'read', 'what', 'how', 'can you', 'please',
@@ -250,8 +243,7 @@ class TerminalBackend:
     
     def handle_help(self):
         """Handle help command"""
-        help_text = """
-Available Commands:
+        help_text = """Available Commands:
 • ls [path] - List directory contents
 • cd <path> - Change directory
 • pwd - Show current directory
@@ -284,7 +276,7 @@ Try natural language commands like:
             
             if path == '..':
                 new_path = os.path.dirname(self.current_dir)
-            elif path.startswith('/') or (len(path) > 1 and path[1] == ':'):  # Unix absolute or Windows drive
+            elif path.startswith('/') or (len(path) > 1 and path[1] == ':'):
                 new_path = path
             else:
                 new_path = os.path.join(self.current_dir, path)
@@ -303,7 +295,6 @@ Try natural language commands like:
             args = command.split()[1:] if len(command.split()) > 1 else []
             path = self.current_dir
             
-            # Check if there's a path argument (not a flag)
             for arg in args:
                 if not arg.startswith('-'):
                     path = os.path.join(self.current_dir, arg) if not os.path.isabs(arg) else arg
@@ -320,10 +311,9 @@ Try natural language commands like:
             except PermissionError:
                 return {'type': 'error', 'output': f'ls: {path}: Permission denied'}
             
-            files.sort()  # Sort files alphabetically
+            files.sort()
             
             if '-l' in args:
-                # Long format
                 output_lines = []
                 for file in files:
                     file_path = os.path.join(path, file)
@@ -338,7 +328,6 @@ Try natural language commands like:
                         output_lines.append(f"?????????? {0:>8} ??? ?? ??:?? {file}")
                 return {'type': 'output', 'output': '\n'.join(output_lines)}
             else:
-                # Simple format - show in columns
                 if not files:
                     return {'type': 'output', 'output': ''}
                 return {'type': 'output', 'output': '  '.join(files)}
@@ -365,7 +354,6 @@ Try natural language commands like:
             if not args:
                 return {'type': 'error', 'output': 'rm: missing operand'}
             
-            # Filter out flags to get the file/directory name
             file_args = [arg for arg in args if not arg.startswith('-')]
             if not file_args:
                 return {'type': 'error', 'output': 'rm: missing file operand'}
@@ -405,7 +393,6 @@ Try natural language commands like:
             try:
                 with open(file_path, 'r', encoding='utf-8') as f:
                     content = f.read()
-                    # Limit output size for safety
                     if len(content) > 10000:
                         content = content[:10000] + '\n... (output truncated)'
                 return {'type': 'output', 'output': content}
@@ -415,7 +402,7 @@ Try natural language commands like:
             return {'type': 'error', 'output': f'cat error: {str(e)}'}
     
     def handle_ps(self):
-        """Handle ps command - show running processes"""
+        """Handle ps command"""
         try:
             processes = []
             for proc in psutil.process_iter(['pid', 'name', 'cpu_percent', 'memory_percent']):
@@ -424,13 +411,12 @@ Try natural language commands like:
                 except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
                     pass
             
-            # Sort by CPU usage
             processes.sort(key=lambda x: x['cpu_percent'] or 0, reverse=True)
             
             output = f"{'PID':<8} {'NAME':<25} {'CPU%':<8} {'MEM%':<8}\n"
             output += "-" * 55 + "\n"
             
-            for proc in processes[:20]:  # Show top 20 processes
+            for proc in processes[:20]:
                 pid = proc['pid']
                 name = (proc['name'][:22] + '...') if len(proc['name']) > 25 else proc['name']
                 cpu = proc['cpu_percent'] or 0
@@ -442,15 +428,15 @@ Try natural language commands like:
             return {'type': 'error', 'output': f'ps error: {str(e)}'}
     
     def handle_top(self):
-        """Handle top command - system overview"""
+        """Handle top command"""
         try:
             cpu_percent = psutil.cpu_percent(interval=0.1)
             memory = psutil.virtual_memory()
             disk = psutil.disk_usage('/')
             boot_time = datetime.fromtimestamp(psutil.boot_time())
             
-            output = f"System Overview:\n"
-            output += f"{'='*50}\n"
+            output = "System Overview:\n"
+            output += "=" * 50 + "\n"
             output += f"Uptime: {datetime.now() - boot_time}\n"
             output += f"CPU Usage: {cpu_percent:.1f}%\n"
             output += f"Memory: {memory.percent:.1f}% used ({memory.used // (1024**3):.1f}GB / {memory.total // (1024**3):.1f}GB)\n"
@@ -462,7 +448,7 @@ Try natural language commands like:
             return {'type': 'error', 'output': f'top error: {str(e)}'}
     
     def handle_df(self):
-        """Handle df command - disk usage"""
+        """Handle df command"""
         try:
             partitions = psutil.disk_partitions()
             output = f"{'Filesystem':<20} {'Size':<8} {'Used':<8} {'Avail':<8} {'Use%':<6} {'Mounted on'}\n"
@@ -488,9 +474,144 @@ Try natural language commands like:
             return {'type': 'error', 'output': f'df error: {str(e)}'}
     
     def handle_free(self):
-        """Handle free command - memory usage"""
+        """Handle free command"""
         try:
             memory = psutil.virtual_memory()
             swap = psutil.swap_memory()
             
-            output = f"
+            output = f"{'':>12} {'Total':>10} {'Used':>10} {'Free':>10} {'Available':>10}\n"
+            output += "-" * 65 + "\n"
+            
+            mem_total = memory.total // (1024**2)
+            mem_used = memory.used // (1024**2)
+            mem_free = memory.available // (1024**2)
+            mem_available = memory.available // (1024**2)
+            
+            swap_total = swap.total // (1024**2)
+            swap_used = swap.used // (1024**2)
+            swap_free = swap.free // (1024**2)
+            
+            output += f"{'Mem:':>12} {mem_total:>9}M {mem_used:>9}M {mem_free:>9}M {mem_available:>9}M\n"
+            output += f"{'Swap:':>12} {swap_total:>9}M {swap_used:>9}M {swap_free:>9}M {0:>9}M\n"
+            
+            return {'type': 'output', 'output': output}
+        except Exception as e:
+            return {'type': 'error', 'output': f'free error: {str(e)}'}
+    
+    def handle_ai_help(self):
+        """Handle ai-help command"""
+        help_text = """AI Terminal Features:
+====================
+
+Natural Language Commands:
+• "list files" → ls
+• "create folder called test" → mkdir test
+• "go to documents" → cd documents
+• "show me running processes" → ps
+• "what's the system status" → top
+• "delete the test folder" → rm -r test
+
+Smart Interpretation:
+• AI converts natural language to terminal commands
+• Get suggestions for partial commands
+• Command explanations available
+
+Examples to try:
+• "I want to see what files are here"
+• "Create a new directory for my project" 
+• "Show me the system information"
+• "Help me navigate to the desktop"
+• "List all running processes"
+
+The AI uses pattern matching to understand your intent
+and convert it to appropriate terminal commands.
+        """
+        return {'type': 'output', 'output': help_text}
+
+# Initialize terminal backend
+terminal = TerminalBackend()
+
+@app.route('/')
+def index():
+    return render_template('index.html')
+
+@socketio.on('connect')
+def handle_connect():
+    emit('terminal_output', {
+        'type': 'welcome',
+        'output': f'Welcome to AI-Enhanced Terminal!\nCurrent directory: {terminal.current_dir}\nType "help" for commands or "ai-help" for AI features.\n'
+    })
+
+@socketio.on('command')
+def handle_command(data):
+    command = data.get('command', '').strip()
+    os_mode = data.get('os_mode', None)
+    if not command:
+        return
+    
+    terminal.command_history.append(command)
+    terminal.history_index = len(terminal.command_history) - 1
+    
+    if os_mode:
+        ai_service.set_mode(os_mode)
+    
+    result = terminal.execute_command(command)
+    emit('terminal_output', result)
+
+@socketio.on('get_history')
+def handle_get_history():
+    emit('command_history', {'history': terminal.command_history})
+
+@socketio.on('get_system_info')
+def handle_get_system_info():
+    try:
+        cpu_percent = psutil.cpu_percent(interval=0.1)
+        memory = psutil.virtual_memory()
+        disk = psutil.disk_usage('/')
+        
+        system_info = {
+            'cpu_percent': round(cpu_percent, 1),
+            'memory_percent': round(memory.percent, 1),
+            'memory_used': round(memory.used / (1024**3), 1),
+            'memory_total': round(memory.total / (1024**3), 1),
+            'disk_percent': round(disk.percent, 1),
+            'disk_used': round(disk.used / (1024**3), 1),
+            'disk_total': round(disk.total / (1024**3), 1)
+        }
+        
+        emit('system_info', system_info)
+    except Exception as e:
+        emit('system_info', {'error': str(e)})
+
+@socketio.on('get_ai_suggestions')
+def handle_get_ai_suggestions(data):
+    partial_command = data.get('command', '')
+    suggestions = ai_service.get_suggestions(partial_command)
+    emit('ai_suggestions', {'suggestions': suggestions})
+
+@socketio.on('interpret_natural_language')
+def handle_interpret_natural_language(data):
+    natural_language = data.get('command', '')
+    result = ai_service.interpret_command(natural_language)
+    emit('ai_interpretation', result)
+
+@socketio.on('explain_command')
+def handle_explain_command(data):
+    command = data.get('command', '')
+    explanation = ai_service.explain_command(command)
+    emit('command_explanation', {'command': command, 'explanation': explanation})
+
+# Production server configuration for Render
+if __name__ == '__main__':
+    port = int(os.environ.get('PORT', 5000))
+    
+    if os.environ.get('FLASK_ENV') == 'production':
+        print(f"Starting production server on port {port}")
+        eventlet.wsgi.server(eventlet.listen(('0.0.0.0', port)), app)
+    else:
+        print(f"Starting development server on port {port}")
+        socketio.run(app, 
+                    host='0.0.0.0', 
+                    port=port, 
+                    debug=False,
+                    allow_unsafe_werkzeug=True)
