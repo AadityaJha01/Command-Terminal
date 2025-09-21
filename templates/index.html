@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Python Terminal</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+</head>
+<body>
+    <div class="terminal-container">
+        <!-- Terminal Header -->
+        <div class="terminal-header">
+            <div class="terminal-title">
+                <i class="fas fa-terminal"></i> 
+                <span class="title-text">Command Terminal</span>
+                <span class="title-subtitle">Powered by Python</span>
+            </div>
+            <div class="os-toggle">
+                <button id="os-toggle-btn" class="os-toggle-btn" title="Switch OS Mode">
+                    <span id="os-mode-label">Windows</span>
+                </button>
+            </div>
+            <div class="system-info">
+                <div class="info-item">
+                    <i class="fas fa-microchip"></i>
+                    <span id="cpu-info">CPU: --%</span>
+                </div>
+                <div class="info-item">
+                    <i class="fas fa-memory"></i>
+                    <span id="memory-info">RAM: --%</span>
+                </div>
+                <div class="info-item">
+                    <i class="fas fa-hdd"></i>
+                    <span id="disk-info">Disk: --%</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- Terminal Body -->
+        <div class="terminal-body">
+            <div class="terminal-output" id="terminal-output">
+                <div class="output-line">
+                    <span class="prompt">Welcome to Command Terminal!</span>
+                </div>
+                <div class="output-line">
+                    <span class="prompt">Type 'help' for available commands.</span>
+                </div>
+            </div>
+            
+            <div class="terminal-input-line">
+                <span class="prompt">user@terminal:~$</span>
+                <input type="text" id="terminal-input" autocomplete="off" spellcheck="false">
+                <div class="cursor" id="cursor"></div>
+            </div>
+        </div>
+
+        <!-- Command History Panel (Hidden by default) -->
+        <div class="history-panel" id="history-panel">
+            <div class="history-header">
+                <h3>Command History</h3>
+                <button class="close-history" onclick="toggleHistory()">
+                    <i class="fas fa-times"></i>
+                </button>
+            </div>
+            <div class="history-content" id="history-content">
+                <!-- History items will be populated here -->
+            </div>
+        </div>
+    </div>
+
+    <!-- Help Modal -->
+    <div class="modal" id="help-modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>Terminal Commands Help</h2>
+                <button class="close-modal" onclick="closeHelp()">
+                    <i class="fas fa-times"></i>
+                </button>
+            </div>
+            <div class="modal-body">
+                <div class="command-category">
+                    <h3>File Operations</h3>
+                    <div class="command-item">
+                        <code>ls</code> - List directory contents
+                    </div>
+                    <div class="command-item">
+                        <code>ls -l</code> - List with detailed information
+                    </div>
+                    <div class="command-item">
+                        <code>cd &lt;directory&gt;</code> - Change directory
+                    </div>
+                    <div class="command-item">
+                        <code>pwd</code> - Print working directory
+                    </div>
+                    <div class="command-item">
+                        <code>mkdir &lt;name&gt;</code> - Create directory
+                    </div>
+                    <div class="command-item">
+                        <code>rm &lt;file&gt;</code> - Remove file
+                    </div>
+                    <div class="command-item">
+                        <code>rm -r &lt;directory&gt;</code> - Remove directory recursively
+                    </div>
+                    <div class="command-item">
+                        <code>cat &lt;file&gt;</code> - Display file contents
+                    </div>
+                </div>
+                
+                <div class="command-category">
+                    <h3>System Monitoring</h3>
+                    <div class="command-item">
+                        <code>ps</code> - Show running processes
+                    </div>
+                    <div class="command-item">
+                        <code>top</code> - System overview
+                    </div>
+                    <div class="command-item">
+                        <code>df</code> - Disk usage information
+                    </div>
+                    <div class="command-item">
+                        <code>free</code> - Memory usage information
+                    </div>
+                </div>
+                
+                <div class="command-category">
+                    <h3>Terminal Features</h3>
+                    <div class="command-item">
+                        <code>clear</code> - Clear terminal screen
+                    </div>
+                    <div class="command-item">
+                        <code>history</code> - Show command history
+                    </div>
+                    <div class="command-item">
+                        <code>help</code> - Show this help
+                    </div>
+                    <div class="command-item">
+                        <code>ai-help</code> - Show AI features help
+                    </div>
+                </div>
+                
+                <div class="command-category">
+                    <h3>AI Features</h3>
+                    <div class="command-item">
+                        <strong>Natural Language Commands:</strong>
+                    </div>
+                    <div class="command-item">
+                        "list files" &rarr; <code>ls</code>
+                    </div>
+                    <div class="command-item">
+                        "create folder called test" &rarr; <code>mkdir test</code>
+                    </div>
+                    <div class="command-item">
+                        "go to documents" &rarr; <code>cd documents</code>
+                    </div>
+                    <div class="command-item">
+                        "show me running processes" &rarr; <code>ps</code>
+                    </div>
+                    <div class="command-item">
+                        "what's in this file" &rarr; <code>cat filename</code>
+                    </div>
+                    <div class="command-item">
+                        "delete the test folder" &rarr; <code>rm -r test</code>
+                    </div>
+                    <div class="command-item">
+                        "show system info" &rarr; <code>top</code>
+                    </div>
+                </div>
+                
+                <div class="command-category">
+                    <h3>Shortcuts</h3>
+                    <div class="command-item">
+                        <kbd>↑</kbd> / <kbd>↓</kbd> - Navigate command history
+                    </div>
+                    <div class="command-item">
+                        <kbd>Tab</kbd> - Auto-complete (coming soon)
+                    </div>
+                    <div class="command-item">
+                        <kbd>Ctrl + L</kbd> - Clear screen
+                    </div>
+                    <div class="command-item">
+                        <kbd>Ctrl + H</kbd> - Show history
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.1/socket.io.js"></script>
+    <script src="{{ url_for('static', filename='script.js') }}"></script>
+</body>
+</html>
